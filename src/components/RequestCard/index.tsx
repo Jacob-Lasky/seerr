@@ -107,134 +107,133 @@ const RequestCardError = ({ requestData }: RequestCardErrorProps) => {
 
   return (
     <div
-      className="relative flex w-72 overflow-hidden rounded-xl bg-gray-800 p-4 text-gray-400 shadow ring-1 ring-red-500 sm:w-96"
+      className="relative grid w-72 overflow-hidden rounded-xl bg-gray-800 p-4 text-gray-400 shadow ring-1 ring-red-500 sm:w-96"
       data-testid="request-card"
     >
-      <div className="w-20 sm:w-28">
-        <div className="w-full" style={{ paddingBottom: '150%' }}>
-          <div className="absolute inset-0 z-10 flex min-w-0 flex-1 flex-col p-4">
-            <div
-              className="whitespace-normal text-base font-bold text-white sm:text-lg"
-              data-testid="request-card-title"
-            >
-              {intl.formatMessage(messages.mediaerror, {
-                mediaType: intl.formatMessage(
-                  requestData?.type
-                    ? requestData?.type === 'movie'
-                      ? globalMessages.movie
-                      : requestData?.type === 'book'
-                        ? globalMessages.book
-                        : globalMessages.tvshow
-                    : globalMessages.request
-                ),
-              })}
-            </div>
-            {requestData && (
-              <>
-                {hasPermission(
-                  [Permission.MANAGE_REQUESTS, Permission.REQUEST_VIEW],
-                  { type: 'or' }
-                ) && (
-                  <div className="card-field !hidden sm:!block">
-                    <Link
-                      href={`/users/${requestData.requestedBy.id}`}
-                      className="group flex items-center"
-                    >
-                      <span className="avatar-sm">
-                        <CachedImage
-                          type="avatar"
-                          src={requestData.requestedBy.avatar}
-                          alt=""
-                          className="avatar-sm object-cover"
-                          width={20}
-                          height={20}
-                        />
-                      </span>
-                      <span className="truncate group-hover:underline">
-                        {requestData.requestedBy.displayName}
-                      </span>
-                    </Link>
-                  </div>
-                )}
-                <div className="mt-2 flex items-center text-sm sm:mt-1">
-                  <span className="mr-2 hidden font-bold sm:block">
-                    {intl.formatMessage(globalMessages.status)}
+      <div className="col-start-1 row-start-1 w-20 sm:w-28">
+        <div className="w-full" style={{ paddingBottom: '150%' }} />
+      </div>
+      <div className="relative z-10 col-start-1 row-start-1 flex min-w-0 flex-col">
+        <div
+          className="whitespace-normal text-base font-bold text-white sm:text-lg"
+          data-testid="request-card-title"
+        >
+          {intl.formatMessage(messages.mediaerror, {
+            mediaType: intl.formatMessage(
+              requestData?.type
+                ? requestData?.type === 'movie'
+                  ? globalMessages.movie
+                  : requestData?.type === 'book'
+                    ? globalMessages.book
+                    : globalMessages.tvshow
+                : globalMessages.request
+            ),
+          })}
+        </div>
+        {requestData && (
+          <>
+            {hasPermission(
+              [Permission.MANAGE_REQUESTS, Permission.REQUEST_VIEW],
+              { type: 'or' }
+            ) && (
+              <div className="card-field !hidden sm:!block">
+                <Link
+                  href={`/users/${requestData.requestedBy.id}`}
+                  className="group flex items-center"
+                >
+                  <span className="avatar-sm">
+                    <CachedImage
+                      type="avatar"
+                      src={requestData.requestedBy.avatar}
+                      alt=""
+                      className="avatar-sm object-cover"
+                      width={20}
+                      height={20}
+                    />
                   </span>
+                  <span className="truncate group-hover:underline">
+                    {requestData.requestedBy.displayName}
+                  </span>
+                </Link>
+              </div>
+            )}
+            <div className="mt-2 flex flex-wrap items-center gap-y-1 text-sm sm:mt-1">
+              <span className="mr-2 hidden font-bold sm:block">
+                {intl.formatMessage(globalMessages.status)}
+              </span>
+              {bookIntentStatus(
+                requestData.bookRequestIntentState,
+                requestData.media[
+                  requestData.is4k ? 'status4k' : 'status'
+                ] === MediaStatus.AVAILABLE
+              ) && (
+                <span role="status" className="order-last block w-full whitespace-normal text-amber-300">
                   {bookIntentStatus(
                     requestData.bookRequestIntentState,
                     requestData.media[
                       requestData.is4k ? 'status4k' : 'status'
                     ] === MediaStatus.AVAILABLE
-                  ) && (
-                    <span role="status" className="block text-amber-300">
-                      {bookIntentStatus(
-                        requestData.bookRequestIntentState,
-                        requestData.media[
-                          requestData.is4k ? 'status4k' : 'status'
-                        ] === MediaStatus.AVAILABLE
-                      )}
-                    </span>
                   )}
+                </span>
+              )}
 
-                  {requestData.status === MediaRequestStatus.DECLINED ||
-                  requestData.status === MediaRequestStatus.FAILED ? (
-                    <Badge badgeType="danger">
-                      {requestData.status === MediaRequestStatus.DECLINED
-                        ? intl.formatMessage(globalMessages.declined)
-                        : intl.formatMessage(globalMessages.failed)}
-                    </Badge>
-                  ) : (
-                    <StatusBadge
-                      status={
-                        requestData.media[
-                          requestData.is4k ? 'status4k' : 'status'
-                        ]
-                      }
-                      downloadItem={requestDownloadStatus}
-                      title={intl.formatMessage(messages.unknowntitle)}
-                      inProgress={requestDownloadStatus.length > 0}
-                      is4k={requestData.is4k}
-                      mediaType={requestData.type}
-                      plexUrl={requestData.is4k ? plexUrl4k : plexUrl}
-                      serviceUrl={
-                        requestData.is4k
-                          ? requestData.media.serviceUrl4k
-                          : requestData.media.serviceUrl
-                      }
-                    />
-                  )}
-                </div>
+              {requestData.status === MediaRequestStatus.DECLINED ||
+              requestData.status === MediaRequestStatus.FAILED ? (
+                <Badge badgeType="danger">
+                  {requestData.status === MediaRequestStatus.DECLINED
+                    ? intl.formatMessage(globalMessages.declined)
+                    : intl.formatMessage(globalMessages.failed)}
+                </Badge>
+              ) : (
+                <StatusBadge
+                  status={
+                    requestData.media[
+                      requestData.is4k ? 'status4k' : 'status'
+                    ]
+                  }
+                  downloadItem={requestDownloadStatus}
+                  title={intl.formatMessage(messages.unknowntitle)}
+                  inProgress={requestDownloadStatus.length > 0}
+                  is4k={requestData.is4k}
+                  mediaType={requestData.type}
+                  plexUrl={requestData.is4k ? plexUrl4k : plexUrl}
+                  serviceUrl={
+                    requestData.is4k
+                      ? requestData.media.serviceUrl4k
+                      : requestData.media.serviceUrl
+                  }
+                />
+              )}
+            </div>
+          </>
+        )}
+        <div className="flex flex-1 items-end space-x-2">
+          {hasPermission(Permission.MANAGE_REQUESTS) &&
+            requestData?.media.id && (
+              <>
+                <Button
+                  buttonType="danger"
+                  buttonSize="sm"
+                  className="mt-4 hidden sm:block"
+                  onClick={() => deleteRequest()}
+                >
+                  <TrashIcon />
+                  <span>{intl.formatMessage(globalMessages.delete)}</span>
+                </Button>
+                <Tooltip
+                  content={intl.formatMessage(messages.deleterequest)}
+                >
+                  <Button
+                    buttonType="danger"
+                    buttonSize="sm"
+                    className="mt-4 sm:hidden"
+                    onClick={() => deleteRequest()}
+                  >
+                    <TrashIcon />
+                  </Button>
+                </Tooltip>
               </>
             )}
-            <div className="flex flex-1 items-end space-x-2">
-              {hasPermission(Permission.MANAGE_REQUESTS) &&
-                requestData?.media.id && (
-                  <>
-                    <Button
-                      buttonType="danger"
-                      buttonSize="sm"
-                      className="mt-4 hidden sm:block"
-                      onClick={() => deleteRequest()}
-                    >
-                      <TrashIcon />
-                      <span>{intl.formatMessage(globalMessages.delete)}</span>
-                    </Button>
-                    <Tooltip
-                      content={intl.formatMessage(messages.deleterequest)}
-                    >
-                      <Button
-                        buttonType="danger"
-                        buttonSize="sm"
-                        className="mt-4 sm:hidden"
-                        onClick={() => deleteRequest()}
-                      >
-                        <TrashIcon />
-                      </Button>
-                    </Tooltip>
-                  </>
-                )}
-            </div>
-          </div>
         </div>
       </div>
     </div>
@@ -478,7 +477,7 @@ const RequestCard = ({ request, onTitleData }: RequestCardProps) => {
               </div>
             </div>
           )}
-          <div className="mt-2 flex items-center text-sm sm:mt-1">
+          <div className="mt-2 flex flex-wrap items-center gap-y-1 text-sm sm:mt-1">
             <span className="mr-2 hidden font-bold sm:block">
               {intl.formatMessage(globalMessages.status)}
             </span>
@@ -487,7 +486,7 @@ const RequestCard = ({ request, onTitleData }: RequestCardProps) => {
               requestData.media[requestData.is4k ? 'status4k' : 'status'] ===
                 MediaStatus.AVAILABLE
             ) && (
-              <span role="status" className="block text-amber-300">
+              <span role="status" className="order-last block w-full whitespace-normal text-amber-300">
                 {bookIntentStatus(
                   requestData.bookRequestIntentState,
                   requestData.media[
