@@ -3,7 +3,7 @@ import type { MediaRequest } from '@server/entity/MediaRequest';
 import type { NonFunctionProperties, PaginatedResponse } from './common';
 
 export interface RequestResultsResponse extends PaginatedResponse {
-  results: (NonFunctionProperties<MediaRequest> & {
+  results: (Omit<NonFunctionProperties<MediaRequest>, 'bookRequestIntent'> & {
     profileName?: string;
     metadataProfileName?: string;
     canRemove?: boolean;

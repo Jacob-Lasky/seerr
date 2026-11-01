@@ -1,7 +1,10 @@
 import Hardcover from '@server/api/hardcover';
 import type { RadarrMovieOptions } from '@server/api/servarr/radarr';
 import RadarrAPI from '@server/api/servarr/radarr';
-import type { ReadarrBookOptions } from '@server/api/servarr/readarr';
+import type {
+  ReadarrBook,
+  ReadarrBookOptions,
+} from '@server/api/servarr/readarr';
 import ReadarrAPI from '@server/api/servarr/readarr';
 import type {
   AddSeriesOptions,
@@ -20,6 +23,7 @@ import Media from '@server/entity/Media';
 import { MediaRequest } from '@server/entity/MediaRequest';
 import Season from '@server/entity/Season';
 import SeasonRequest from '@server/entity/SeasonRequest';
+import { prepareBookRequestIntent } from '@server/lib/bookRequestIntentJob';
 import notificationManager, { Notification } from '@server/lib/notifications';
 import { getSettings } from '@server/lib/settings';
 import logger from '@server/logger';
@@ -1038,11 +1042,51 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
           return;
         }
 
-        const hardcover = new Hardcover();
         const readarr = new ReadarrAPI({
           apiKey: readarrSettings.apiKey,
           url: ReadarrAPI.buildUrl(readarrSettings, '/api/v1'),
         });
+        if (readarr.requestIntentFormat) {
+          await prepareBookRequestIntent(entity, manager, readarrSettings, {
+            root: rootFolder,
+            qualityProfile,
+            metadataProfile,
+            tags,
+          });
+          return;
+        }
+        const recordBookIdentity = async (
+          readarrBook: ReadarrBook
+        ): Promise<void> => {
+          const mediaRepository = getRepository(Media);
+          // We grab media again here to make sure we have the latest version of it
+          const media = await mediaRepository.findOne({
+            where: { id: entity.media.id },
+          });
+
+          if (!media) {
+            throw new Error('Media data not found');
+          }
+
+          media[entity.is4k ? 'externalServiceId4k' : 'externalServiceId'] =
+            readarrBook.id;
+          media[entity.is4k ? 'externalServiceSlug4k' : 'externalServiceSlug'] =
+            readarrBook.titleSlug;
+          media[entity.is4k ? 'serviceId4k' : 'serviceId'] =
+            readarrSettings?.id;
+          await mediaRepository.save(media);
+        };
+        // Facade no-op eligibility must precede metadata, tags and remote writes.
+        const existing = await readarr.getExistingChaptarrBookForReconciliation(
+          entity.media.tmdbId,
+          !readarrSettings.preventSearch,
+          entity.is4k ? 'audiobook' : 'ebook'
+        );
+        if (existing) {
+          await recordBookIdentity(existing);
+          return;
+        }
+        const hardcover = new Hardcover();
         const book = await hardcover.getBook(entity.media.tmdbId);
 
         if (readarrSettings.tagRequests) {
@@ -1103,26 +1147,7 @@ export class MediaRequestSubscriber implements EntitySubscriberInterface<MediaRe
         // Run entity asynchronously so we don't wait for it on the UI side
         readarr
           .addBook(readarrBookOptions)
-          .then(async (readarrBook) => {
-            const mediaRepository = getRepository(Media);
-            // We grab media again here to make sure we have the latest version of it
-            const media = await mediaRepository.findOne({
-              where: { id: entity.media.id },
-            });
-
-            if (!media) {
-              throw new Error('Media data not found');
-            }
-
-            media[entity.is4k ? 'externalServiceId4k' : 'externalServiceId'] =
-              readarrBook.id;
-            media[
-              entity.is4k ? 'externalServiceSlug4k' : 'externalServiceSlug'
-            ] = readarrBook.titleSlug;
-            media[entity.is4k ? 'serviceId4k' : 'serviceId'] =
-              readarrSettings?.id;
-            await mediaRepository.save(media);
-          })
+          .then(recordBookIdentity)
           .catch(async () => {
             try {
               const requestRepository = getRepository(MediaRequest);

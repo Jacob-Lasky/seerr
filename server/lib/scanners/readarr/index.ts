@@ -3,6 +3,7 @@ import ReadarrAPI from '@server/api/servarr/readarr';
 import { MediaStatus, MediaType } from '@server/constants/media';
 import { getRepository } from '@server/datasource';
 import Media from '@server/entity/Media';
+import { runBookRequestIntents } from '@server/lib/bookRequestIntentJob';
 import type {
   RunnableScanner,
   StatusBase,
@@ -24,12 +25,26 @@ class ReadarrScanner
   private servers: ReadarrSettings[];
   private currentServer: ReadarrSettings;
   private readarrApi: ReadarrAPI;
+
+  private checkRunBudget(sessionId: string, deadline: number): void {
+    if (this.sessionId !== sessionId) {
+      throw new Error('Readarr availability sync was replaced by another run');
+    }
+    if (!this.running) {
+      throw new Error('Readarr availability sync was cancelled');
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        'Readarr availability sync exceeded its 14-minute budget'
+      );
+    }
+  }
   private scannedHcIds: Set<number> = new Set();
   private scannedAudioHcIds: Set<number> = new Set();
   private didScanStandard = false;
   private didScanAudio = false;
-  private serverReturnedEmpty = false;
-  private serverAudioReturnedEmpty = false;
+  private serverInventoryIncomplete = false;
+  private serverAudioInventoryIncomplete = false;
 
   constructor() {
     super('Readarr Scan', { bundleSize: 50 });
@@ -48,14 +63,18 @@ class ReadarrScanner
   public async run(): Promise<void> {
     const settings = getSettings();
     const sessionId = this.startRun();
+    const deadline = Date.now() + 14 * 60_000;
+    const assertActive = () => this.checkRunBudget(sessionId, deadline);
     this.scannedHcIds.clear();
     this.scannedAudioHcIds.clear();
     this.didScanStandard = false;
     this.didScanAudio = false;
-    this.serverReturnedEmpty = false;
-    this.serverAudioReturnedEmpty = false;
+    this.serverInventoryIncomplete = false;
+    this.serverAudioInventoryIncomplete = false;
 
     try {
+      await runBookRequestIntents();
+      assertActive();
       this.servers = uniqWith(settings.readarr, (readarrA, readarrB) => {
         return (
           readarrA.hostname === readarrB.hostname &&
@@ -65,6 +84,7 @@ class ReadarrScanner
       });
 
       for (const server of this.servers) {
+        assertActive();
         this.currentServer = server;
         if (server.syncEnabled) {
           this.log(
@@ -77,9 +97,21 @@ class ReadarrScanner
             url: ReadarrAPI.buildUrl(server, '/api/v1'),
           });
 
-          this.items = await this.readarrApi.getBooks();
+          const items = await this.readarrApi.getBooks();
+          assertActive();
+          this.items = items;
 
           const serverAudio = this.enableAudioBook && server.is4k;
+          if (!this.readarrApi.inventoryComplete) {
+            // Missing HC identities cannot prove an orphan. Preserve existing requests/status.
+            if (serverAudio) this.serverAudioInventoryIncomplete = true;
+            else this.serverInventoryIncomplete = true;
+            this.log(
+              'Chaptarr aliases incomplete; orphan cleanup disabled for this format.',
+              'warn'
+            );
+          }
+
           if (serverAudio) {
             this.didScanAudio = true;
           } else {
@@ -88,9 +120,9 @@ class ReadarrScanner
 
           if (this.items.length === 0) {
             if (serverAudio) {
-              this.serverAudioReturnedEmpty = true;
+              this.serverAudioInventoryIncomplete = true;
             } else {
-              this.serverReturnedEmpty = true;
+              this.serverInventoryIncomplete = true;
             }
             this.log(
               `Readarr server ${server.name} returned no books. Orphan cleanup for this profile type will be skipped.`,
@@ -98,7 +130,12 @@ class ReadarrScanner
             );
           }
 
-          await this.loop(this.processReadarrBook.bind(this), { sessionId });
+          await this.loop(
+            (book) => this.processReadarrBook(book, assertActive),
+            {
+              sessionId,
+            }
+          );
         } else {
           this.log(`Sync not enabled. Skipping Readarr server: ${server.name}`);
         }
@@ -122,14 +159,14 @@ class ReadarrScanner
         this.didScanAudio = false;
       }
 
-      if (this.serverReturnedEmpty) {
+      if (this.serverInventoryIncomplete) {
         this.didScanStandard = false;
       }
-      if (this.serverAudioReturnedEmpty) {
+      if (this.serverAudioInventoryIncomplete) {
         this.didScanAudio = false;
       }
 
-      await this.cleanupOrphanedBooks();
+      await this.cleanupOrphanedBooks(assertActive);
       this.log('Readarr scan complete', 'info');
     } catch (e) {
       this.log('Scan interrupted', 'error', { errorMessage: e.message });
@@ -138,7 +175,11 @@ class ReadarrScanner
     }
   }
 
-  private async processReadarrBook(readarrBook: ReadarrBook): Promise<void> {
+  private async processReadarrBook(
+    readarrBook: ReadarrBook,
+    assertActive: () => void
+  ): Promise<void> {
+    assertActive();
     const serverAudio = this.enableAudioBook && this.currentServer.is4k;
     const hcId = parseInt(readarrBook.foreignBookId, 10);
 
@@ -157,7 +198,8 @@ class ReadarrScanner
     }
 
     try {
-      const isFullyDownloaded = readarrBook.statistics?.percentOfBooks >= 100;
+      const isFullyDownloaded =
+        this.readarrApi.isBookFullyDownloaded(readarrBook);
 
       await this.processBook(hcId, {
         is4k: serverAudio,
@@ -179,7 +221,8 @@ class ReadarrScanner
 
   private async existsInAnyServer(
     hcId: number,
-    isAudio: boolean
+    isAudio: boolean,
+    assertActive: () => void
   ): Promise<boolean> {
     const servers = this.servers.filter(
       (server) =>
@@ -187,17 +230,18 @@ class ReadarrScanner
     );
 
     for (const server of servers) {
+      assertActive();
+      let book: ReadarrBook;
       try {
         const api = new ReadarrAPI({
           apiKey: server.apiKey,
           url: ReadarrAPI.buildUrl(server, '/api/v1'),
         });
-        const book = await api.getBookByHcId(hcId);
-
-        if (book.id) {
-          return true;
-        }
+        book = await api.getBookByHcId(hcId);
       } catch (e) {
+        // Errors thrown in this catch escape it; do not turn cancellation/deadline
+        // into a remote confirmation failure and continue cleanup.
+        assertActive();
         this.log(
           `Could not confirm book ${hcId} against Readarr server ${server.name}. Skipping cleanup for it.`,
           'warn',
@@ -205,29 +249,41 @@ class ReadarrScanner
         );
         return true;
       }
+      // Deliberately OUTSIDE the remote catch: a late result must terminate the run.
+      assertActive();
+      if (book.id) return true;
     }
 
     return false;
   }
 
-  private async cleanupOrphanedBooks(): Promise<void> {
+  private async cleanupOrphanedBooks(assertActive: () => void): Promise<void> {
+    assertActive();
     const mediaRepository = getRepository(Media);
 
     if (this.didScanStandard) {
+      assertActive();
       const processingBooks = await mediaRepository.find({
         where: { mediaType: MediaType.BOOK, status: MediaStatus.PROCESSING },
         relations: { requests: true },
       });
 
+      assertActive();
       for (const media of processingBooks) {
+        assertActive();
         if (!this.scannedHcIds.has(media.tmdbId)) {
-          if (await this.existsInAnyServer(media.tmdbId, false)) {
-            continue;
-          }
+          const exists = await this.existsInAnyServer(
+            media.tmdbId,
+            false,
+            assertActive
+          );
+          assertActive();
+          if (exists) continue;
 
           media.status = MediaStatus.UNKNOWN;
           await mediaRepository.save(media);
-          await this.declineOrphanedRequests(media, false);
+          assertActive();
+          await this.declineOrphanedRequests(media, false, assertActive);
           this.log(
             `Book ${media.tmdbId} not found in any Readarr server. Status reset to UNKNOWN.`,
             'info'
@@ -242,6 +298,7 @@ class ReadarrScanner
     }
 
     if (this.didScanAudio) {
+      assertActive();
       const processingAudioBooks = await mediaRepository.find({
         where: {
           mediaType: MediaType.BOOK,
@@ -250,15 +307,22 @@ class ReadarrScanner
         relations: { requests: true },
       });
 
+      assertActive();
       for (const media of processingAudioBooks) {
+        assertActive();
         if (!this.scannedAudioHcIds.has(media.tmdbId)) {
-          if (await this.existsInAnyServer(media.tmdbId, true)) {
-            continue;
-          }
+          const exists = await this.existsInAnyServer(
+            media.tmdbId,
+            true,
+            assertActive
+          );
+          assertActive();
+          if (exists) continue;
 
           media.status4k = MediaStatus.UNKNOWN;
           await mediaRepository.save(media);
-          await this.declineOrphanedRequests(media, true);
+          assertActive();
+          await this.declineOrphanedRequests(media, true, assertActive);
           this.log(
             `Book ${media.tmdbId} not found in any audiobook Readarr server. Audiobook status reset to UNKNOWN.`,
             'info'

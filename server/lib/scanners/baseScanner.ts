@@ -797,8 +797,10 @@ class BaseScanner<T> {
    */
   protected async declineOrphanedRequests(
     media: Media,
-    is4k: boolean
+    is4k: boolean,
+    assertActive?: () => void
   ): Promise<void> {
+    assertActive?.();
     if (media.requests === undefined) {
       throw new Error(
         `declineOrphanedRequests called for media ${media.id} without the 'requests' relation loaded`
@@ -813,11 +815,14 @@ class BaseScanner<T> {
     );
 
     for (const request of orphanedRequests) {
+      assertActive?.();
       request.status = MediaRequestStatus.DECLINED;
       // Ensure that the media relation is set so the AfterUpdate
       // notification hook can resolve it
       request.media = media;
+      assertActive?.();
       await requestRepository.save(request);
+      assertActive?.();
       this.log(
         `Declined orphaned ${
           media.mediaType === MediaType.MOVIE

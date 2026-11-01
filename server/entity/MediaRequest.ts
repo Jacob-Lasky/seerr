@@ -1,4 +1,5 @@
 import Hardcover from '@server/api/hardcover';
+import ReadarrAPI from '@server/api/servarr/readarr';
 import TheMovieDb from '@server/api/themoviedb';
 import {
   MediaRequestStatus,
@@ -7,6 +8,10 @@ import {
 } from '@server/constants/media';
 import { getRepository } from '@server/datasource';
 import type { MediaRequestBody } from '@server/interfaces/api/requestInterfaces';
+import {
+  exposeIntentState,
+  type IntentState,
+} from '@server/lib/bookRequestIntent';
 import notificationManager, { Notification } from '@server/lib/notifications';
 import overrideRules from '@server/lib/overrideRules';
 import { Permission } from '@server/lib/permissions';
@@ -49,6 +54,42 @@ type MediaRequestOptions = {
 
 @Entity()
 export class MediaRequest {
+  /** Shared pre-save check for creation and user-originated fulfillment transitions. */
+  public static async assertBookRequestSafe(
+    target: Pick<
+      MediaRequestBody,
+      'mediaType' | 'mediaId' | 'is4k' | 'serverId'
+    >
+  ): Promise<void> {
+    if (target.mediaType !== MediaType.BOOK) return;
+    const is4k = !!target.is4k;
+    const services = getSettings().readarr;
+    const server =
+      target.serverId !== undefined &&
+      target.serverId !== null &&
+      target.serverId >= 0
+        ? services.find((service) => service.id === target.serverId)
+        : services.find(
+            (service) => service.isDefault && service.is4k === is4k
+          );
+    if (!server || server.is4k !== is4k) {
+      throw new RequestPermissionError(
+        'No matching book-format server is configured.'
+      );
+    }
+    const api = new ReadarrAPI({
+      url: ReadarrAPI.buildUrl(server, '/api/v1'),
+      apiKey: server.apiKey,
+    });
+    try {
+      await api.assertBookRequestSafe(target.mediaId);
+    } catch {
+      throw new RequestPermissionError(
+        'Book request blocked: Chaptarr inventory is incomplete, ambiguous, or already contains this book.'
+      );
+    }
+  }
+
   public static async request(
     requestBody: MediaRequestBody,
     user: User,
@@ -199,6 +240,8 @@ export class MediaRequest {
           ? await hardcover.getBook(requestBody.mediaId)
           : await tmdb.getTvShow({ tvId: requestBody.mediaId });
 
+    await MediaRequest.assertBookRequestSafe(requestBody);
+
     let media = await mediaRepository.findOne({
       where: {
         tmdbId: requestBody.mediaId,
@@ -256,6 +299,14 @@ export class MediaRequest {
       })
       .getMany();
 
+    if (
+      requestBody.mediaType === MediaType.BOOK &&
+      existing.some((r) => r.bookRequestIntent != null)
+    ) {
+      throw new DuplicateMediaRequestError(
+        'Retain the existing book intent; replacement requests cannot escape uncertain admission.'
+      );
+    }
     if (existing && existing.length > 0) {
       // If there is an existing movie/book request that isn't declined, don't allow a new one.
       if (
@@ -437,6 +488,12 @@ export class MediaRequest {
         ignoreQuota,
       });
 
+      // Reuse the exact HC metadata already fetched before the ORM save. Never
+      // issue a metadata POST or producer POST from an uncommitted callback.
+      Object.defineProperty(request, 'bookIntentMetadata', {
+        value: tmdbMedia,
+        enumerable: false,
+      });
       await requestRepository.save(request);
       return request;
     } else {
@@ -580,6 +637,39 @@ export class MediaRequest {
 
   @PrimaryGeneratedColumn()
   public id: number;
+
+  // Ordinary saves can carry stale null/non-null intent bytes. Only the
+  // dedicated parameterized intent operations may write this private column.
+  @Column({ type: 'text', nullable: true, insert: false, update: false })
+  public bookRequestIntent?: string | null;
+
+  // Only this finite state is exposed; payload/root/target bytes stay private.
+  public bookRequestIntentState?: IntentState;
+
+  @AfterLoad()
+  private hideBookIntent(): void {
+    exposeIntentState(this);
+    if (
+      this.bookRequestIntent == null &&
+      this.type === MediaType.BOOK &&
+      this.status === MediaRequestStatus.APPROVED
+    ) {
+      const server =
+        this.serverId != null && this.serverId >= 0
+          ? getSettings().readarr.find((s) => s.id === this.serverId)
+          : getSettings().readarr.find(
+              (s) => s.isDefault && s.is4k === this.is4k
+            );
+      if (
+        server &&
+        new ReadarrAPI({
+          url: ReadarrAPI.buildUrl(server, '/api/v1'),
+          apiKey: server.apiKey,
+        }).requestIntentFormat
+      )
+        this.bookRequestIntentState = 'prepared';
+    }
+  }
 
   @Column({ type: 'integer' })
   @Index()

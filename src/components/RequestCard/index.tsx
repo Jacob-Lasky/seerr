@@ -3,6 +3,7 @@ import Badge from '@app/components/Common/Badge';
 import Button from '@app/components/Common/Button';
 import CachedImage from '@app/components/Common/CachedImage';
 import Tooltip from '@app/components/Common/Tooltip';
+import { bookIntentStatus } from '@app/components/RequestList/intentStatus';
 import RequestModal from '@app/components/RequestModal';
 import StatusBadge from '@app/components/StatusBadge';
 import useDeepLinks from '@app/hooks/useDeepLinks';
@@ -159,6 +160,22 @@ const RequestCardError = ({ requestData }: RequestCardErrorProps) => {
                   <span className="mr-2 hidden font-bold sm:block">
                     {intl.formatMessage(globalMessages.status)}
                   </span>
+                  {bookIntentStatus(
+                    requestData.bookRequestIntentState,
+                    requestData.media[
+                      requestData.is4k ? 'status4k' : 'status'
+                    ] === MediaStatus.AVAILABLE
+                  ) && (
+                    <span role="status" className="block text-amber-300">
+                      {bookIntentStatus(
+                        requestData.bookRequestIntentState,
+                        requestData.media[
+                          requestData.is4k ? 'status4k' : 'status'
+                        ] === MediaStatus.AVAILABLE
+                      )}
+                    </span>
+                  )}
+
                   {requestData.status === MediaRequestStatus.DECLINED ||
                   requestData.status === MediaRequestStatus.FAILED ? (
                     <Badge badgeType="danger">
@@ -465,6 +482,21 @@ const RequestCard = ({ request, onTitleData }: RequestCardProps) => {
             <span className="mr-2 hidden font-bold sm:block">
               {intl.formatMessage(globalMessages.status)}
             </span>
+            {bookIntentStatus(
+              requestData.bookRequestIntentState,
+              requestData.media[requestData.is4k ? 'status4k' : 'status'] ===
+                MediaStatus.AVAILABLE
+            ) && (
+              <span role="status" className="block text-amber-300">
+                {bookIntentStatus(
+                  requestData.bookRequestIntentState,
+                  requestData.media[
+                    requestData.is4k ? 'status4k' : 'status'
+                  ] === MediaStatus.AVAILABLE
+                )}
+              </span>
+            )}
+
             {requestData.status === MediaRequestStatus.DECLINED ? (
               <Badge badgeType="danger">
                 {intl.formatMessage(globalMessages.declined)}
@@ -513,6 +545,7 @@ const RequestCard = ({ request, onTitleData }: RequestCardProps) => {
           </div>
           <div className="flex flex-1 items-end space-x-2">
             {requestData.status === MediaRequestStatus.FAILED &&
+              !requestData.bookRequestIntentState &&
               hasPermission(Permission.MANAGE_REQUESTS) && (
                 <Button
                   buttonType="primary"

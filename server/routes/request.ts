@@ -582,6 +582,26 @@ requestRoutes.put<{ requestId: string }>(
         const ownerChanging = requestUser.id !== previousOwnerId;
 
         return requestLock.dispatch(userKey(requestUser.id), async () => {
+          if (request.bookRequestIntent != null) {
+            return next({
+              status: 409,
+              message:
+                'Book intent target is held; run the existing Readarr scan to reconcile. Do not create a replacement request.',
+            });
+          }
+          const effectiveServerId =
+            req.body.serverId === undefined
+              ? request.serverId
+              : req.body.serverId;
+
+          // Use persisted type/work/format, but the target server being saved.
+          // Body mediaType must never bypass book safety; admins are not exempt.
+          await MediaRequest.assertBookRequestSafe({
+            mediaType: request.type,
+            mediaId: request.media.tmdbId,
+            is4k: request.is4k,
+            serverId: effectiveServerId,
+          });
           if (req.body.mediaType === MediaType.MOVIE) {
             if (ownerChanging && !request.ignoreQuota) {
               const quotas = await requestUser.getQuota();
@@ -613,7 +633,7 @@ requestRoutes.put<{ requestId: string }>(
               }
             }
 
-            request.serverId = req.body.serverId;
+            request.serverId = effectiveServerId;
             request.profileId = req.body.profileId;
             request.metadataProfileId = req.body.metadataProfileId;
             request.rootFolder = req.body.rootFolder;
@@ -773,6 +793,9 @@ requestRoutes.put<{ requestId: string }>(
         });
       });
     } catch (e) {
+      if (e instanceof RequestPermissionError) {
+        return next({ status: 403, message: e.message });
+      }
       next({ status: 500, message: e.message });
     }
   }
@@ -800,6 +823,13 @@ requestRoutes.delete('/:requestId', async (req, res, next) => {
         });
       }
 
+      if (request.bookRequestIntent != null) {
+        return next({
+          status: 409,
+          message:
+            'Retain this book intent and its admission history; deletion cannot clear an uncertain submission.',
+        });
+      }
       await requestRepository.remove(request);
 
       return res.status(204).send();
@@ -829,6 +859,13 @@ requestRoutes.post<{
           relations: { requestedBy: true, modifiedBy: true },
         });
 
+        if (request.bookRequestIntent != null) {
+          return next({
+            status: 409,
+            message:
+              'Book intent cannot be resent; run the existing Readarr scan for exact-positive reconciliation.',
+          });
+        }
         if (request.status !== MediaRequestStatus.FAILED) {
           return next({
             status: 409,
@@ -836,6 +873,12 @@ requestRoutes.post<{
           });
         }
 
+        await MediaRequest.assertBookRequestSafe({
+          mediaType: request.type,
+          mediaId: request.media.tmdbId,
+          is4k: request.is4k,
+          serverId: request.serverId,
+        });
         // this also triggers updating the parent media's status & sending to *arr
         request.status = MediaRequestStatus.APPROVED;
         request.modifiedBy = req.user;
@@ -844,6 +887,9 @@ requestRoutes.post<{
         return res.status(200).json(request);
       });
     } catch (e) {
+      if (e instanceof RequestPermissionError) {
+        return next({ status: 403, message: e.message });
+      }
       logger.error('Error processing request retry', {
         label: 'Media Request',
         message: e.message,
@@ -893,6 +939,14 @@ requestRoutes.post<{
           });
         }
 
+        if (newStatus === MediaRequestStatus.APPROVED) {
+          await MediaRequest.assertBookRequestSafe({
+            mediaType: request.type,
+            mediaId: request.media.tmdbId,
+            is4k: request.is4k,
+            serverId: request.serverId,
+          });
+        }
         request.status = newStatus;
         request.modifiedBy = req.user;
         await requestRepository.save(request);
@@ -900,6 +954,9 @@ requestRoutes.post<{
         return res.status(200).json(request);
       });
     } catch (e) {
+      if (e instanceof RequestPermissionError) {
+        return next({ status: 403, message: e.message });
+      }
       logger.error('Error processing request update', {
         label: 'Media Request',
         message: e.message,
